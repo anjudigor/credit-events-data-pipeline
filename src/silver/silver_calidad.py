@@ -23,36 +23,38 @@ def normalizar_texto(col: F.Column) -> F.Column:
     return F.upper(F.trim(col))
 
 
-def col_segura(df: DataFrame, nombre: str) -> F.Column:
+def columna_o_null(df: DataFrame, nombre: str) -> F.Column:
     # Si no existe la columna, devolvemos NULL y lo mandamos a cuarentena por reglas de calidad
     return F.col(nombre) if nombre in df.columns else F.lit(None)
 
 
-def castear_campos(df: DataFrame) -> DataFrame:
+def normalizar_y_castear(df: DataFrame) -> DataFrame:
     return (
         df
-        .withColumn("event_time_ts", F.to_timestamp(col_segura(df, "event_time")))
-        .withColumn("ingestion_date_dt", F.to_date(col_segura(df, "ingestion_date")))
-        .withColumn("event_id", col_segura(df, "event_id").cast("string"))
-        .withColumn("loan_id", col_segura(df, "loan_id").cast("string"))
-        .withColumn("customer_id", col_segura(df, "customer_id").cast("string"))
-        .withColumn("event_type", normalizar_texto(col_segura(df, "event_type").cast("string")))
-        .withColumn("loan_status", normalizar_texto(col_segura(df, "loan_status").cast("string")))
-        .withColumn("region", normalizar_texto(col_segura(df, "region").cast("string")))
-        .withColumn("channel", normalizar_texto(col_segura(df, "channel").cast("string")))
-        .withColumn("product_type", normalizar_texto(col_segura(df, "product_type").cast("string")))
-        .withColumn("installment_number", col_segura(df, "installment_number").cast("int"))
-        .withColumn("term_months", col_segura(df, "term_months").cast("int"))
-        .withColumn("days_past_due", col_segura(df, "days_past_due").cast("int"))
-        .withColumn("installment_amount", col_segura(df, "installment_amount").cast("double"))
-        .withColumn("principal_amount", col_segura(df, "principal_amount").cast("double"))
-        .withColumn("outstanding_balance", col_segura(df, "outstanding_balance").cast("double"))
-        .withColumn("interest_rate", col_segura(df, "interest_rate").cast("double"))
+        .withColumn("event_time_ts", F.to_timestamp(columna_o_null(df, "event_time")))
+        .withColumn("ingestion_date_dt", F.to_date(columna_o_null(df, "ingestion_date")))
+        .withColumn("event_id", columna_o_null(df, "event_id").cast("string"))
+        .withColumn("loan_id", columna_o_null(df, "loan_id").cast("string"))
+        .withColumn("customer_id", columna_o_null(df, "customer_id").cast("string"))
+        .withColumn("event_type", normalizar_texto(columna_o_null(df, "event_type").cast("string")))
+        .withColumn("loan_status", normalizar_texto(columna_o_null(df, "loan_status").cast("string")))
+        .withColumn("region", normalizar_texto(columna_o_null(df, "region").cast("string")))
+        .withColumn("channel", normalizar_texto(columna_o_null(df, "channel").cast("string")))
+        .withColumn("product_type", normalizar_texto(columna_o_null(df, "product_type").cast("string")))
+        .withColumn("installment_number", columna_o_null(df, "installment_number").cast("int"))
+        .withColumn("term_months", columna_o_null(df, "term_months").cast("int"))
+        .withColumn("days_past_due", columna_o_null(df, "days_past_due").cast("int"))
+        .withColumn("installment_amount", columna_o_null(df, "installment_amount").cast("double"))
+        .withColumn("principal_amount", columna_o_null(df, "principal_amount").cast("double"))
+        .withColumn("outstanding_balance", columna_o_null(df, "outstanding_balance").cast("double"))
+        .withColumn("interest_rate", columna_o_null(df, "interest_rate").cast("double"))
         .withColumn("event_date", F.to_date(F.col("event_time_ts")))
         .withColumn("ingestion_date_filled", F.coalesce(F.col("ingestion_date_dt"), F.col("event_date")))
     )
 
 
+# En caso de eventos repetidos, nos quedamos con el registro más reciente
+# priorizando ingestion_ts o batch_id si están disponibles.
 def quitar_duplicados(df: DataFrame) -> (DataFrame, int):
     if "event_id" not in df.columns:
         return df, 0
@@ -75,44 +77,50 @@ def quitar_duplicados(df: DataFrame) -> (DataFrame, int):
 
 
 def reglas_calidad(df: DataFrame) -> dict:
+    """
+    Reglas básicas de calidad pensadas desde el dominio del negocio:
+    - Identificadores obligatorios
+    - Estados válidos
+    - Valores numéricos razonables
+    """
     reglas = {}
 
     # TODO: cuando veamos los valores únicos reales, afinamos catálogos de channel/product_type si hace falta.
     tipos_evento = ["PAYMENT", "DISBURSEMENT", "DELINQUENCY", "CHARGEOFF", "CLOSE"]
     estados = ["ACTIVE", "DELINQUENT", "CHARGEOFF", "CLOSED"]
 
-    reglas["null_event_id"] = col_segura(df, "event_id").isNull()
+    reglas["null_event_id"] = columna_o_null(df, "event_id").isNull()
     reglas["null_event_time"] = F.col("event_time_ts").isNull()
-    reglas["null_loan_id"] = col_segura(df, "loan_id").isNull()
-    reglas["null_customer_id"] = col_segura(df, "customer_id").isNull()
-    reglas["null_region"] = col_segura(df, "region").isNull()
-    reglas["null_installment_amount"] = col_segura(df, "installment_amount").isNull()
+    reglas["null_loan_id"] = columna_o_null(df, "loan_id").isNull()
+    reglas["null_customer_id"] = columna_o_null(df, "customer_id").isNull()
+    reglas["null_region"] = columna_o_null(df, "region").isNull()
+    reglas["null_installment_amount"] = columna_o_null(df, "installment_amount").isNull()
 
     reglas["invalid_event_type"] = (
-        col_segura(df, "event_type").isNotNull() & (~col_segura(df, "event_type").isin(tipos_evento))
+        columna_o_null(df, "event_type").isNotNull() & (~columna_o_null(df, "event_type").isin(tipos_evento))
     )
     reglas["invalid_loan_status"] = (
-        col_segura(df, "loan_status").isNotNull() & (~col_segura(df, "loan_status").isin(estados))
+        columna_o_null(df, "loan_status").isNotNull() & (~columna_o_null(df, "loan_status").isin(estados))
     )
 
     reglas["rate_out_of_range"] = (
-        col_segura(df, "interest_rate").isNotNull()
-        & ((col_segura(df, "interest_rate") < F.lit(0.0)) | (col_segura(df, "interest_rate") > F.lit(1.0)))
+        columna_o_null(df, "interest_rate").isNotNull()
+        & ((columna_o_null(df, "interest_rate") < F.lit(0.0)) | (columna_o_null(df, "interest_rate") > F.lit(1.0)))
     )
     reglas["negative_days_past_due"] = (
-        col_segura(df, "days_past_due").isNotNull() & (col_segura(df, "days_past_due") < F.lit(0))
+        columna_o_null(df, "days_past_due").isNotNull() & (columna_o_null(df, "days_past_due") < F.lit(0))
     )
 
     reglas["disbursement_installment_number_should_be_0"] = (
-        (col_segura(df, "event_type") == F.lit("DISBURSEMENT"))
-        & col_segura(df, "installment_number").isNotNull()
-        & (col_segura(df, "installment_number") != F.lit(0))
+        (columna_o_null(df, "event_type") == F.lit("DISBURSEMENT"))
+        & columna_o_null(df, "installment_number").isNotNull()
+        & (columna_o_null(df, "installment_number") != F.lit(0))
     )
 
     reglas["payment_installment_number_should_be_gt_0"] = (
-        (col_segura(df, "event_type") == F.lit("PAYMENT"))
-        & col_segura(df, "installment_number").isNotNull()
-        & (col_segura(df, "installment_number") <= F.lit(0))
+        (columna_o_null(df, "event_type") == F.lit("PAYMENT"))
+        & columna_o_null(df, "installment_number").isNotNull()
+        & (columna_o_null(df, "installment_number") <= F.lit(0))
     )
 
     return reglas
@@ -150,7 +158,11 @@ def main():
 
     inicio = datetime.utcnow().isoformat() + "Z"
 
-    # --- LECTURA BRONZE (pandas -> spark) ---
+    # --- LECTURA BRONZE ---
+    # En entornos Windows locales, Spark puede presentar fricción al leer múltiples CSV.
+    # Para mantener el flujo simple y reproducible en local, consolidamos primero con pandas
+    # y luego convertimos a Spark DataFrame.
+
     archivos_csv = list(Path(args.ruta_bronze).glob("*.csv"))
     if not archivos_csv:
         raise ValueError(f"No se encontraron CSV en {args.ruta_bronze}")
@@ -165,7 +177,7 @@ def main():
 
     conteo_bronze = df_bronze.count()
 
-    df_tipado = castear_campos(df_bronze)
+    df_tipado = normalizar_y_castear(df_bronze)
 
     df_sin_dupes, duplicados_detectados = quitar_duplicados(df_tipado)
 
