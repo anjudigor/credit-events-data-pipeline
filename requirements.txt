@@ -1,3 +1,4 @@
 pyspark==3.5.0
 pandas
 matplotlib
+pyarrow
