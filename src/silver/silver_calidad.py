@@ -11,12 +11,23 @@ from pathlib import Path
 
 
 def crear_spark(nombre_app: str = "silver_transform") -> SparkSession:
-    return (
+    spark = (
         SparkSession.builder
         .appName(nombre_app)
-        .master("local[*]")
+        # Menos paralelismo = menos workers/puertos en Windows
+        .master("local[1]")
+        .config("spark.sql.shuffle.partitions", "4")
+        # Forzar comunicación local (evita issues de bind/red)
+        .config("spark.driver.host", "127.0.0.1")
+        .config("spark.driver.bindAddress", "127.0.0.1")
+        # Reutiliza el worker para reducir spawns
+        .config("spark.python.worker.reuse", "true")
         .getOrCreate()
     )
+
+    spark.sparkContext.setLogLevel("ERROR")
+    return spark
+
 
 
 def normalizar_texto(col: F.Column) -> F.Column:
@@ -55,7 +66,7 @@ def normalizar_y_castear(df: DataFrame) -> DataFrame:
 
 # En caso de eventos repetidos, nos quedamos con el registro más reciente
 # priorizando ingestion_ts o batch_id si están disponibles.
-def quitar_duplicados(df: DataFrame) -> (DataFrame, int):
+def quitar_duplicados(df: DataFrame) -> tuple[DataFrame, int]:
     if "event_id" not in df.columns:
         return df, 0
 
@@ -76,7 +87,7 @@ def quitar_duplicados(df: DataFrame) -> (DataFrame, int):
     return df_sin_dupes, duplicados
 
 
-def reglas_calidad(df: DataFrame) -> dict:
+def reglas_calidad(df: DataFrame) -> dict[str, F.Column]:
     """
     Reglas básicas de calidad pensadas desde el dominio del negocio:
     - Identificadores obligatorios
@@ -190,11 +201,15 @@ def main():
     conteo_validos = validos.count()
     conteo_cuarentena = cuarentena.count()
 
-    invalidos_por_regla = {}
-    for nombre_regla in reglas.keys():
-        invalidos_por_regla[nombre_regla] = cuarentena.filter(
-            F.array_contains(F.col("dq_failed_rules"), nombre_regla)
-        ).count()
+    invalidos_por_regla_df = (
+        cuarentena
+        .select(F.explode(F.col("dq_failed_rules")).alias("regla"))
+        .groupBy("regla")
+        .count()
+    )
+
+    invalidos_por_regla = {r["regla"]: int(r["count"]) for r in invalidos_por_regla_df.collect()}
+
 
     metricas = {
         "run_started_at_utc": inicio,
